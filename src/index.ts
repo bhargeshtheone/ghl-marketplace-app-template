@@ -3,6 +3,8 @@ for handling HTTP requests. */
 import express, { Express, Request, Response } from "express";
 import dotenv from "dotenv";
 import { GHL } from "./ghl";
+import { GoogleMerchantCenter } from "./google-merchant";
+import { GHLProductsService } from "./ghl-products";
 import * as CryptoJS from 'crypto-js'
 import { json } from "body-parser";
 
@@ -20,6 +22,7 @@ app.use(express.static(path));
 this instance to the variable `ghl`. This allows you to use the methods and properties defined in
 the `GHL` class to interact with the GoHighLevel API. */
 const ghl = new GHL();
+const ghlProducts = new GHLProductsService();
 
 const port = process.env.PORT;
 
@@ -100,6 +103,138 @@ app.post("/example-webhook-handler",async (req: Request, res: Response) => {
     console.log(req.body)
 })
 
+
+/* Google Merchant Center Integration Routes */
+
+app.post("/api/google-merchant/setup", async (req: Request, res: Response) => {
+  const { locationId, merchantId, serviceAccountKey, autoSync = true } = req.body;
+  
+  if (!locationId || !merchantId || !serviceAccountKey) {
+    return res.status(400).json({ error: "Missing required fields: locationId, merchantId, serviceAccountKey" });
+  }
+
+  try {
+    if (!ghl.checkInstallationExists(locationId)) {
+      return res.status(401).json({ error: "Installation not found for this location" });
+    }
+
+    const parsedServiceKey = typeof serviceAccountKey === 'string' ? JSON.parse(serviceAccountKey) : serviceAccountKey;
+    const gmc = new GoogleMerchantCenter({ merchantId, serviceAccountKey: parsedServiceKey });
+    
+    // Test the connection by trying to list products
+    await gmc.getProducts();
+    
+    // Store settings (in production, use proper database)
+    const settings = {
+      merchantId,
+      serviceAccountKey: JSON.stringify(parsedServiceKey),
+      autoSync,
+      syncInterval: 60, // 1 hour default
+      setupAt: new Date().toISOString()
+    };
+
+    res.json({ success: true, settings });
+  } catch (error: any) {
+    console.error('Google Merchant setup error:', error);
+    res.status(500).json({ error: "Failed to setup Google Merchant Center", details: error.message });
+  }
+});
+
+app.post("/api/google-merchant/sync", async (req: Request, res: Response) => {
+  const { locationId, merchantId, serviceAccountKey } = req.body;
+  
+  if (!locationId || !merchantId || !serviceAccountKey) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  try {
+    if (!ghl.checkInstallationExists(locationId)) {
+      return res.status(401).json({ error: "Installation not found for this location" });
+    }
+
+    const parsedServiceKey = typeof serviceAccountKey === 'string' ? JSON.parse(serviceAccountKey) : serviceAccountKey;
+    const gmc = new GoogleMerchantCenter({ merchantId, serviceAccountKey: parsedServiceKey });
+    
+    // Get GHL products
+    const ghlProductsList = await ghlProducts.getProducts(locationId);
+    
+    const syncResults = {
+      total: ghlProductsList.length,
+      success: 0,
+      failed: 0,
+      errors: [] as string[]
+    };
+
+    // Sync each product
+    for (const product of ghlProductsList) {
+      try {
+        const validation = await gmc.validateProduct(product);
+        if (!validation.valid) {
+          syncResults.failed++;
+          syncResults.errors.push(`Product ${product.name}: ${validation.errors.join(', ')}`);
+          continue;
+        }
+
+        await gmc.insertProduct(product);
+        syncResults.success++;
+      } catch (error: any) {
+        syncResults.failed++;
+        syncResults.errors.push(`Product ${product.name}: ${error.message}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      results: syncResults,
+      lastSyncAt: new Date().toISOString()
+    });
+  } catch (error: any) {
+    console.error('Google Merchant sync error:', error);
+    res.status(500).json({ error: "Failed to sync products", details: error.message });
+  }
+});
+
+app.get("/api/google-merchant/products", async (req: Request, res: Response) => {
+  const { locationId, merchantId, serviceAccountKey } = req.query;
+  
+  if (!locationId || !merchantId || !serviceAccountKey) {
+    return res.status(400).json({ error: "Missing required query parameters" });
+  }
+
+  try {
+    if (!ghl.checkInstallationExists(locationId as string)) {
+      return res.status(401).json({ error: "Installation not found for this location" });
+    }
+
+    const parsedServiceKey = typeof serviceAccountKey === 'string' ? JSON.parse(serviceAccountKey as string) : serviceAccountKey;
+    const gmc = new GoogleMerchantCenter({ merchantId: merchantId as string, serviceAccountKey: parsedServiceKey });
+    
+    const products = await gmc.getProducts();
+    res.json({ success: true, products });
+  } catch (error: any) {
+    console.error('Google Merchant products error:', error);
+    res.status(500).json({ error: "Failed to fetch products", details: error.message });
+  }
+});
+
+app.post("/api/google-merchant/validate", async (req: Request, res: Response) => {
+  const { locationId, product, merchantId, serviceAccountKey } = req.body;
+  
+  if (!locationId || !product || !merchantId || !serviceAccountKey) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  try {
+    const parsedServiceKey = typeof serviceAccountKey === 'string' ? JSON.parse(serviceAccountKey) : serviceAccountKey;
+    const gmc = new GoogleMerchantCenter({ merchantId, serviceAccountKey: parsedServiceKey });
+    
+    const validation = await gmc.validateProduct(product);
+    res.json({ success: true, validation });
+  } catch (error: any) {
+    console.error('Product validation error:', error);
+    res.status(500).json({ error: "Failed to validate product", details: error.message });
+  }
+});
 
 /* The `app.post("/decrypt-sso",async (req: Request, res: Response) => { ... })` route is used to
 decrypt session details using ssoKey. */

@@ -1,18 +1,18 @@
 <template>
-  <img alt="Vue logo" src="./assets/logo.png">
-  <HelloWorld msg="Welcome to Your Vue.js App"/>
+  <div id="app">
+    <GoogleMerchantSetup />
+  </div>
 </template>
 
 <script>
-import HelloWorld from './components/HelloWorld.vue'
+import GoogleMerchantSetup from './components/GoogleMerchantSetup.vue'
 
 export default {
   name: 'App',
   components: {
-    HelloWorld
+    GoogleMerchantSetup
   },
   async mounted(){
-    
     const data = await window.ghl.getUserData();
     console.log("user-details", data)
   }
